@@ -1,12 +1,12 @@
 class Runta < Formula
   desc "CLI for the Runta service"
   homepage "https://github.com/runta-dev/runta"
-  version "0.0.1"
+  version "0.0.2"
 
   on_macos do
     on_arm do
       url "https://github.com/runta-dev/homebrew-tap/releases/download/v#{version}/runta-#{version}-aarch64-apple-darwin.tar.gz"
-      sha256 "086ac3524233628b2a33305476c9094e6d8697e0874f4256aedcb58803818db9"
+      sha256 "0fbf38ce3130ab779cfe9450a35e8effc74a099d8dcb7e48ac16c088a24641fd"
     end
     on_intel do
       odie "runta only supports Apple Silicon"
