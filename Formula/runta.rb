@@ -15,8 +15,6 @@ class Runta < Formula
 
   def install
     bin.install "runta"
-    quiet_system "xattr", "-d", "com.apple.quarantine", bin/"runta"
-    system "codesign", "--force", "--sign", "-", bin/"runta"
   end
 
   test do
