@@ -1,0 +1,201 @@
+name: Update Runta formula
+
+on:
+  schedule:
+    - cron: '17,47 * * * *'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: update-runta-formula
+  cancel-in-progress: false
+
+jobs:
+  discover:
+    name: Find a new Runta release
+    runs-on: ubuntu-latest
+    env:
+      GH_TOKEN: ${{ github.token }}
+      UPSTREAM_REPOSITORY: runta-dev/runta
+    outputs:
+      update: ${{ steps.release.outputs.update }}
+      version: ${{ steps.release.outputs.version }}
+      tag: ${{ steps.release.outputs.tag }}
+      asset: ${{ steps.release.outputs.asset }}
+
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+
+      - name: Find latest signed macOS release
+        id: release
+        shell: bash
+        run: |
+          set -euo pipefail
+          # shellcheck disable=SC2016
+
+          release="$({
+            gh api "repos/${UPSTREAM_REPOSITORY}/releases?per_page=50" --jq '
+              [
+                .[]
+                | select(.draft == false and .prerelease == false)
+                | . as $release
+                | ($release.tag_name | ltrimstr("v")) as $version
+                | $release.assets[]
+                | select(.name == ("runta-" + $version + "-aarch64-apple-darwin.zip"))
+                | {
+                    tag: $release.tag_name,
+                    version: $version,
+                    asset: .name
+                  }
+              ][0]
+            '
+          })"
+
+          if [ -z "$release" ] || [ "$release" = "null" ]; then
+            echo "No stable Runta release contains the signed macOS asset yet."
+            echo "update=false" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
+          version="$(jq -r '.version' <<<"$release")"
+          tag="$(jq -r '.tag' <<<"$release")"
+          asset="$(jq -r '.asset' <<<"$release")"
+          # shellcheck disable=SC2016
+          current_version="$(ruby -ne 'puts $1 if $_ =~ /^\s*version "([^"]+)"/' Formula/runta.rb)"
+
+          if [[ ! "$version" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+            echo "error: unsupported Runta release version: $version" >&2
+            exit 1
+          fi
+
+          if ! ruby -e '
+            require "rubygems"
+            exit(Gem::Version.new(ARGV[0]) > Gem::Version.new(ARGV[1]) ? 0 : 1)
+          ' "$version" "$current_version"; then
+            echo "Formula ${current_version} is already at or ahead of release ${version}."
+            echo "update=false" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
+          {
+            echo "update=true"
+            echo "version=$version"
+            echo "tag=$tag"
+            echo "asset=$asset"
+          } >> "$GITHUB_OUTPUT"
+
+  update:
+    name: Update and verify Runta formula
+    needs: discover
+    if: needs.discover.outputs.update == 'true'
+    runs-on: macos-15
+    timeout-minutes: 30
+    permissions:
+      contents: write
+      pull-requests: write
+    env:
+      GH_TOKEN: ${{ github.token }}
+      UPSTREAM_REPOSITORY: runta-dev/runta
+
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          fetch-depth: 0
+
+      - name: Download and verify signed binary
+        id: artifact
+        shell: bash
+        env:
+          RELEASE_TAG: ${{ needs.discover.outputs.tag }}
+          RELEASE_ASSET: ${{ needs.discover.outputs.asset }}
+          RELEASE_VERSION: ${{ needs.discover.outputs.version }}
+        run: |
+          set -euo pipefail
+
+          artifact_dir="$RUNNER_TEMP/runta-release"
+          extract_dir="$RUNNER_TEMP/runta-extract"
+          mkdir -p "$artifact_dir" "$extract_dir"
+
+          gh release download "$RELEASE_TAG" \
+            --repo "$UPSTREAM_REPOSITORY" \
+            --pattern "$RELEASE_ASSET" \
+            --dir "$artifact_dir"
+
+          archive="$artifact_dir/$RELEASE_ASSET"
+          ditto -x -k "$archive" "$extract_dir"
+
+          binary_count="$(find "$extract_dir" -type f -name runta | wc -l | tr -d ' ')"
+          if [ "$binary_count" -ne 1 ]; then
+            echo "error: expected exactly one runta binary in $RELEASE_ASSET" >&2
+            exit 1
+          fi
+          binary="$(find "$extract_dir" -type f -name runta -print -quit)"
+          chmod 0755 "$binary"
+
+          codesign --verify --strict --verbose=2 "$binary"
+          spctl --assess --type execute --verbose=2 "$binary"
+
+          version_output="$($binary --version)"
+          if [[ " $version_output " != *" $RELEASE_VERSION "* ]]; then
+            echo "error: binary version does not match $RELEASE_VERSION: $version_output" >&2
+            exit 1
+          fi
+
+          sha256="$(shasum -a 256 "$archive" | awk '{print $1}')"
+          echo "sha256=$sha256" >> "$GITHUB_OUTPUT"
+
+      - name: Update formula
+        env:
+          RELEASE_VERSION: ${{ needs.discover.outputs.version }}
+          RELEASE_SHA256: ${{ steps.artifact.outputs.sha256 }}
+        run: |
+          ruby scripts/update-runta-formula.rb \
+            Formula/runta.rb \
+            "$RELEASE_VERSION" \
+            "$RELEASE_SHA256"
+          ruby test/update_runta_formula_test.rb
+
+      - name: Audit and test formula
+        run: |
+          set -euo pipefail
+
+          tap_root="$(brew --repository)/Library/Taps/runta-dev"
+          mkdir -p "$tap_root"
+          ln -s "$GITHUB_WORKSPACE" "$tap_root/homebrew-tap"
+
+          brew audit --strict runta-dev/tap/runta
+          brew install runta-dev/tap/runta
+          brew test runta-dev/tap/runta
+
+      - name: Create update pull request
+        id: pull_request
+        env:
+          RELEASE_VERSION: ${{ needs.discover.outputs.version }}
+        run: |
+          set -euo pipefail
+
+          branch="automation/runta-v${RELEASE_VERSION}"
+          if gh api "repos/${GITHUB_REPOSITORY}/git/ref/heads/${branch}" >/dev/null 2>&1; then
+            echo "error: remote branch already exists: $branch" >&2
+            exit 1
+          fi
+
+          git switch -c "$branch"
+          git config user.name "runta-release-bot"
+          git config user.email "runta-release-bot@users.noreply.github.com"
+          git add -- Formula/runta.rb
+          git commit -m "chore: update runta to v${RELEASE_VERSION}"
+          git push --set-upstream origin "$branch"
+
+          pr_url="$(gh pr create \
+            --base dev \
+            --head "$branch" \
+            --title "chore: update runta to v${RELEASE_VERSION}" \
+            --body "Automated Formula update from the signed and notarized Runta v${RELEASE_VERSION} release asset. The updater verified the code signature, Gatekeeper assessment, CLI version, Formula audit, installation, and test before opening this PR.")"
+          echo "url=$pr_url" >> "$GITHUB_OUTPUT"
+
+          if [ "${{ vars.RUNTA_FORMULA_AUTO_MERGE }}" = "true" ]; then
+            gh pr merge --auto --squash "$pr_url"
+          fi
