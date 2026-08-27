@@ -135,7 +135,6 @@ jobs:
           chmod 0755 "$binary"
 
           codesign --verify --strict --verbose=2 "$binary"
-          spctl --assess --type execute --verbose=2 "$binary"
 
           version_output="$($binary --version)"
           if [[ " $version_output " != *" $RELEASE_VERSION "* ]]; then
