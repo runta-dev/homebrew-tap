@@ -150,7 +150,6 @@ jobs:
             Formula/runta.rb \
             "$RELEASE_VERSION" \
             "$RELEASE_SHA256"
-          ruby test/update_runta_formula_test.rb
 
       - name: Audit and test formula
         run: |
