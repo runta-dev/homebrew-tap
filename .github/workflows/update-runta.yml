@@ -1,20 +1,23 @@
 name: Update Runta formula
 
 on:
-  schedule:
-    - cron: '17,47 * * * *'
   workflow_dispatch:
+    inputs:
+      version:
+        description: 'Runta release version without the v prefix'
+        required: true
+        type: string
 
 permissions:
   contents: read
 
 concurrency:
-  group: update-runta-formula
+  group: update-runta-formula-${{ inputs.version }}
   cancel-in-progress: false
 
 jobs:
   discover:
-    name: Find a new Runta release
+    name: Validate requested Runta release
     runs-on: ubuntu-latest
     env:
       GH_TOKEN: ${{ github.token }}
@@ -28,55 +31,48 @@ jobs:
     steps:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
 
-      - name: Find latest signed macOS release
+      - name: Validate signed macOS release
         id: release
         shell: bash
+        env:
+          REQUESTED_VERSION: ${{ inputs.version }}
         run: |
           set -euo pipefail
-          # shellcheck disable=SC2016
 
-          release="$({
-            gh api "repos/${UPSTREAM_REPOSITORY}/releases?per_page=50" --jq '
-              [
-                .[]
-                | select(.draft == false and .prerelease == false)
-                | . as $release
-                | ($release.tag_name | ltrimstr("v")) as $version
-                | $release.assets[]
-                | select(.name == ("runta-" + $version + "-aarch64-apple-darwin.zip"))
-                | {
-                    tag: $release.tag_name,
-                    version: $version,
-                    asset: .name
-                  }
-              ][0]
-            '
-          })"
-
-          if [ -z "$release" ] || [ "$release" = "null" ]; then
-            echo "No stable Runta release contains the signed macOS asset yet."
-            echo "update=false" >> "$GITHUB_OUTPUT"
-            exit 0
-          fi
-
-          version="$(jq -r '.version' <<<"$release")"
-          tag="$(jq -r '.tag' <<<"$release")"
-          asset="$(jq -r '.asset' <<<"$release")"
-          # shellcheck disable=SC2016
-          current_version="$(ruby -ne 'puts $1 if $_ =~ /^\s*version "([^"]+)"/' Formula/runta.rb)"
-
+          version="$REQUESTED_VERSION"
           if [[ ! "$version" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
             echo "error: unsupported Runta release version: $version" >&2
             exit 1
           fi
 
-          if ! ruby -e '
+          tag="v${version}"
+          asset="runta-${version}-aarch64-apple-darwin.zip"
+          release="$(gh api "repos/${UPSTREAM_REPOSITORY}/releases/tags/${tag}")"
+
+          if ! jq -e '.draft == false and .prerelease == false' >/dev/null <<<"$release"; then
+            echo "error: ${tag} is not a stable published Runta release" >&2
+            exit 1
+          fi
+          if ! jq -e --arg asset "$asset" '.assets | any(.name == $asset)' >/dev/null <<<"$release"; then
+            echo "error: ${tag} does not contain ${asset}" >&2
+            exit 1
+          fi
+
+          # shellcheck disable=SC2016
+          current_version="$(ruby -ne 'puts $1 if $_ =~ /^\s*version "([^"]+)"/' Formula/runta.rb)"
+          comparison="$(ruby -e '
             require "rubygems"
-            exit(Gem::Version.new(ARGV[0]) > Gem::Version.new(ARGV[1]) ? 0 : 1)
-          ' "$version" "$current_version"; then
-            echo "Formula ${current_version} is already at or ahead of release ${version}."
+            puts Gem::Version.new(ARGV[0]) <=> Gem::Version.new(ARGV[1])
+          ' "$version" "$current_version")"
+
+          if [ "$comparison" -eq 0 ]; then
+            echo "Formula is already at Runta ${version}."
             echo "update=false" >> "$GITHUB_OUTPUT"
             exit 0
+          fi
+          if [ "$comparison" -lt 0 ]; then
+            echo "error: refusing to downgrade Formula ${current_version} to ${version}" >&2
+            exit 1
           fi
 
           {
@@ -176,25 +172,51 @@ jobs:
           set -euo pipefail
 
           branch="automation/runta-v${RELEASE_VERSION}"
-          if gh api "repos/${GITHUB_REPOSITORY}/git/ref/heads/${branch}" >/dev/null 2>&1; then
-            echo "error: remote branch already exists: $branch" >&2
+          open_pr="$(gh pr list \
+            --repo "$GITHUB_REPOSITORY" \
+            --base dev \
+            --head "$branch" \
+            --state open \
+            --json url \
+            --jq '.[0].url // empty')"
+          if [ -n "$open_pr" ]; then
+            echo "Formula update PR already exists: $open_pr"
+            echo "url=$open_pr" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
+          closed_pr="$(gh pr list \
+            --repo "$GITHUB_REPOSITORY" \
+            --base dev \
+            --head "$branch" \
+            --state closed \
+            --json url,mergedAt \
+            --jq 'map(select(.mergedAt == null))[0].url // empty')"
+          if [ -n "$closed_pr" ]; then
+            echo "error: Formula update PR was closed without merging: $closed_pr" >&2
             exit 1
           fi
 
-          git switch -c "$branch"
-          git config user.name "runta-release-bot"
-          git config user.email "runta-release-bot@users.noreply.github.com"
-          git add -- Formula/runta.rb
-          git commit -m "chore: update runta to v${RELEASE_VERSION}"
-          git push --set-upstream origin "$branch"
+          if git ls-remote --exit-code --heads origin "refs/heads/$branch" >/dev/null 2>&1; then
+            git fetch origin "$branch"
+            # shellcheck disable=SC2016
+            remote_version="$(git show FETCH_HEAD:Formula/runta.rb | ruby -ne 'puts $1 if $_ =~ /^\s*version "([^"]+)"/')"
+            if [ "$remote_version" != "$RELEASE_VERSION" ]; then
+              echo "error: remote branch $branch contains Formula ${remote_version}" >&2
+              exit 1
+            fi
+          else
+            git switch -c "$branch"
+            git config user.name "runta-release-bot"
+            git config user.email "runta-release-bot@users.noreply.github.com"
+            git add -- Formula/runta.rb
+            git commit -m "chore: update runta to v${RELEASE_VERSION}"
+            git push --set-upstream origin "$branch"
+          fi
 
           pr_url="$(gh pr create \
             --base dev \
             --head "$branch" \
             --title "chore: update runta to v${RELEASE_VERSION}" \
-            --body "Automated Formula update from the signed and notarized Runta v${RELEASE_VERSION} release asset. The updater verified the code signature, Gatekeeper assessment, CLI version, Formula audit, installation, and test before opening this PR.")"
+            --body "Automated Formula update from the signed and notarized Runta v${RELEASE_VERSION} release asset. The updater verified the code signature, CLI version, Formula audit, installation, and test before opening this PR.")"
           echo "url=$pr_url" >> "$GITHUB_OUTPUT"
-
-          if [ "${{ vars.RUNTA_FORMULA_AUTO_MERGE }}" = "true" ]; then
-            gh pr merge --auto --squash "$pr_url"
-          fi
