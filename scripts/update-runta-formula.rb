@@ -6,7 +6,7 @@ require "rubygems"
 class RuntaFormulaUpdater
   VERSION_PATTERN = /\A\d+\.\d+\.\d+\z/
   SHA256_PATTERN = /\A[0-9a-f]{64}\z/
-  RELEASE_URL = "https://github.com/runta-dev/runta/releases/download/v\#{version}/runta-\#{version}-aarch64-apple-darwin.zip"
+  RELEASE_URL = "https://github.com/runta-dev/homebrew-tap/releases/download/v\#{version}/runta-\#{version}-aarch64-apple-darwin.zip"
 
   def initialize(path, version, sha256)
     @path = path
