@@ -1,12 +1,12 @@
 class Runta < Formula
   desc "CLI for the Runta service"
   homepage "https://github.com/runta-dev/runta"
-  version "0.2.3"
+  version "0.2.4"
 
   on_macos do
     on_arm do
       url "https://github.com/runta-dev/homebrew-tap/releases/download/v#{version}/runta-#{version}-aarch64-apple-darwin.zip"
-      sha256 "14acad9db78d5594f98a1bddb896e2c952296b08cb8da0c78aed2e93143ea002"
+      sha256 "a66e6e7a73e13ad5a5282c0368f15f717758d0c8eadd1b329c58c01a4d683273"
     end
 
     on_intel do
