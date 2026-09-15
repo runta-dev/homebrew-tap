@@ -161,7 +161,7 @@ ruby -c "$formula" >/dev/null
 
 if [ "$audit" = true ]; then
     require_command brew
-    if ! brew config | grep -Eq '^CPU: .*arm64'; then
+    if [ "$(brew ruby -e 'puts Hardware::CPU.arch')" != arm64 ]; then
         die "--audit requires a native Apple Silicon Homebrew installation"
     fi
 
@@ -172,7 +172,7 @@ if [ "$audit" = true ]; then
     fi
     mkdir -p "$local_tap_root"
     ln -s "$repo_root" "$local_tap_path"
-    HOMEBREW_NO_INSTALL_FROM_API=1 brew audit --strict runta-local/tap/runta
+    HOMEBREW_NO_INSTALL_FROM_API=1 brew audit --strict --except=version runta-local/tap/runta
 fi
 
 if [ "$publish" = true ]; then

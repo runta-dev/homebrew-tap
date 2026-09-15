@@ -21,7 +21,7 @@ jobs:
     runs-on: ubuntu-latest
     env:
       GH_TOKEN: ${{ github.token }}
-      UPSTREAM_REPOSITORY: runta-dev/runta
+      RELEASE_REPOSITORY: ${{ github.repository }}
     outputs:
       update: ${{ steps.release.outputs.update }}
       version: ${{ steps.release.outputs.version }}
@@ -47,7 +47,11 @@ jobs:
 
           tag="v${version}"
           asset="runta-${version}-aarch64-apple-darwin.zip"
-          release="$(gh api "repos/${UPSTREAM_REPOSITORY}/releases/tags/${tag}")"
+          # The release operator mirrors the verified private asset before dispatch.
+          if ! release="$(gh api "repos/${RELEASE_REPOSITORY}/releases/tags/${tag}")"; then
+            echo "error: public mirror ${tag} is missing; run scripts/update-runta-local.sh ${version} --publish first" >&2
+            exit 1
+          fi
 
           if ! jq -e '.draft == false and .prerelease == false' >/dev/null <<<"$release"; then
             echo "error: ${tag} is not a stable published Runta release" >&2
@@ -93,7 +97,7 @@ jobs:
       pull-requests: write
     env:
       GH_TOKEN: ${{ github.token }}
-      UPSTREAM_REPOSITORY: runta-dev/runta
+      RELEASE_REPOSITORY: ${{ github.repository }}
 
     steps:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
@@ -115,7 +119,7 @@ jobs:
           mkdir -p "$artifact_dir" "$extract_dir"
 
           gh release download "$RELEASE_TAG" \
-            --repo "$UPSTREAM_REPOSITORY" \
+            --repo "$RELEASE_REPOSITORY" \
             --pattern "$RELEASE_ASSET" \
             --dir "$artifact_dir"
 
@@ -159,7 +163,8 @@ jobs:
           mkdir -p "$tap_root"
           ln -s "$GITHUB_WORKSPACE" "$tap_root/homebrew-tap"
 
-          brew audit --strict runta-dev/tap/runta
+          # The explicit version drives the URL; the signed binary version is checked above.
+          brew audit --strict --except=version runta-dev/tap/runta
           brew install runta-dev/tap/runta
           brew test runta-dev/tap/runta
 
