@@ -137,7 +137,8 @@ jobs:
           codesign --verify --strict --verbose=2 "$binary"
 
           version_output="$($binary --version)"
-          if [[ " $version_output " != *" $RELEASE_VERSION "* ]]; then
+          version="$(ruby -rjson -e 'print JSON.parse(STDIN.read).fetch("version")' <<<"$version_output")"
+          if [ "$version" != "$RELEASE_VERSION" ]; then
             echo "error: binary version does not match $RELEASE_VERSION: $version_output" >&2
             exit 1
           fi
