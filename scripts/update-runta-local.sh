@@ -138,7 +138,8 @@ chmod 0755 "$binary"
 codesign --verify --strict --verbose=2 "$binary"
 
 version_output="$($binary --version)"
-if [[ " $version_output " != *" $version "* ]]; then
+binary_version="$(ruby -rjson -e 'print JSON.parse(STDIN.read).fetch("version")' <<<"$version_output")"
+if [ "$binary_version" != "$version" ]; then
     die "binary version does not match ${version}: ${version_output}"
 fi
 
