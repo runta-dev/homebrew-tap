@@ -94,7 +94,6 @@ jobs:
     timeout-minutes: 30
     permissions:
       contents: write
-      pull-requests: write
     env:
       GH_TOKEN: ${{ github.token }}
       RELEASE_REPOSITORY: ${{ github.repository }}
@@ -169,39 +168,13 @@ jobs:
           brew install runta-dev/tap/runta
           brew test runta-dev/tap/runta
 
-      - name: Create update pull request
-        id: pull_request
+      - name: Publish verified Formula branch
         env:
           RELEASE_VERSION: ${{ needs.discover.outputs.version }}
         run: |
           set -euo pipefail
 
           branch="automation/runta-v${RELEASE_VERSION}"
-          open_pr="$(gh pr list \
-            --repo "$GITHUB_REPOSITORY" \
-            --base dev \
-            --head "$branch" \
-            --state open \
-            --json url \
-            --jq '.[0].url // empty')"
-          if [ -n "$open_pr" ]; then
-            echo "Formula update PR already exists: $open_pr"
-            echo "url=$open_pr" >> "$GITHUB_OUTPUT"
-            exit 0
-          fi
-
-          closed_pr="$(gh pr list \
-            --repo "$GITHUB_REPOSITORY" \
-            --base dev \
-            --head "$branch" \
-            --state closed \
-            --json url,mergedAt \
-            --jq 'map(select(.mergedAt == null))[0].url // empty')"
-          if [ -n "$closed_pr" ]; then
-            echo "error: Formula update PR was closed without merging: $closed_pr" >&2
-            exit 1
-          fi
-
           if git ls-remote --exit-code --heads origin "refs/heads/$branch" >/dev/null 2>&1; then
             git fetch origin "$branch"
             # shellcheck disable=SC2016
@@ -218,10 +191,3 @@ jobs:
             git commit -m "chore: update runta to v${RELEASE_VERSION}"
             git push --set-upstream origin "$branch"
           fi
-
-          pr_url="$(gh pr create \
-            --base dev \
-            --head "$branch" \
-            --title "chore: update runta to v${RELEASE_VERSION}" \
-            --body "Automated Formula update from the signed and notarized Runta v${RELEASE_VERSION} release asset. The updater verified the code signature, CLI version, Formula audit, installation, and test before opening this PR.")"
-          echo "url=$pr_url" >> "$GITHUB_OUTPUT"
