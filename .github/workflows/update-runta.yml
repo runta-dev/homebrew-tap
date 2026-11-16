@@ -163,6 +163,7 @@ jobs:
           mkdir -p "$tap_root"
           ln -s "$GITHUB_WORKSPACE" "$tap_root/homebrew-tap"
 
+          brew trust --formula runta-dev/tap/runta
           # The explicit version drives the URL; the signed binary version is checked above.
           brew audit --strict --except=version runta-dev/tap/runta
           brew install runta-dev/tap/runta
